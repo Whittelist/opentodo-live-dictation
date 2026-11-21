@@ -1,0 +1,1244 @@
+Changes to existing OpenTodo v1.5.0 files (commit a1935e3db038dd76746a9832725ad119c5bb3298)
+for live dictation. New files are under files/; the strings are in strings.json; see README.md.
+
+diff --git a/docs/api.md b/docs/api.md
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -1686,6 +1686,8 @@
+ | PUT | `/api/v1/settings/stt` | owner, credential | any of `{url, model, key}` (`""` clears; a model is needed while a URL is set) → the same shape; `400 invalid_input` names a bad field; connecting or disconnecting is audited as `settings.changed` (`stt.connected`) |
+ | POST | `/api/v1/settings/stt/test` | owner, credential | optional draft `{url, model, key}`: sends a built-in sample with the draft or the stored values → `{ok: true, text}` or `{ok: false, error}`; `409 stt_not_configured` without a service |
+ | POST | `/api/v1/voice/transcribe` | session or `full` token | the raw audio (`Content-Type` `audio/webm`, `audio/ogg`, `audio/mp4` or `audio/wav`; at most 5 MB and 60 seconds, `?seconds=` as recorded), optional `?language=de` → `{text}`; 30 phrases a minute per account (`429 rate_limited`), `409 stt_not_configured`, `502 stt_unavailable` |
++| POST | `/api/v1/voice/live` | session or `full` token | live dictation (fork): `{sdp, language?}` with the browser's WebRTC offer → `{sdp}`, OpenAI's answer; the server adds the realtime session (phrases cut by semantic turn detection and transcribed, no model answers) and its key, and the audio then flows from the browser to OpenAI. `409 stt_not_configured` unless the speech service is OpenAI's API with a key; shares the 30-a-minute limit; `502 stt_unavailable` |
++| POST | `/api/v1/voice/interpret` | session or `full` token | one utterance of a live dictation: `{text, language?, now: "YYYY-MM-DDTHH:MM", timeZone?, tasks: [{title, date?, time?, deadline?, recurrence?, project?, labels?, priority?, deleted?}], previous?: [text], projects?: [name], labels?: [name]}` → `{actions: [{type: create\|update\|delete\|finish, ref, title, date, time, deadline, recurrence, project, labels, priority, clear}]}`; `ref` is a task's position in `tasks` (from 1), null fields stay as they are, `clear` lists removed ones; `finish` (at most one, last) means the person ended the dictation ("eso es todo") and the app adds the tasks. `400 invalid_input`, `409 stt_not_configured`, `429 rate_limited`, `502 stt_unavailable` |
+ 
+ The settings routes and the transcription are refused on a demo instance.
+ 
+diff --git a/docs/self-hosting/configuration.md b/docs/self-hosting/configuration.md
+--- a/docs/self-hosting/configuration.md
++++ b/docs/self-hosting/configuration.md
+@@ -72,6 +72,12 @@
+ | `OPENTODO_STT_URL` | unset, off (locks) | `http://speaches:8000` | [Speech to text](speech-to-text.md) |
+ | `OPENTODO_STT_MODEL` | unset (locks) | `Systran/faster-whisper-small` | [Speech to text](speech-to-text.md) |
+ | `OPENTODO_STT_KEY_FILE` | unset (locks) | `/run/secrets/stt_key` | [Speech to text](speech-to-text.md) |
++| `OPENTODO_VOICE_LIVE` | `on` (live dictation whenever the speech service is OpenAI's API with a key) | `off` | [Live dictation](../voice-live.md) (fork) |
++| `OPENTODO_VOICE_LIVE_MODEL` | `gpt-realtime-2.1-mini` (the realtime session; it never answers) | `gpt-realtime-2.1` | [Live dictation](../voice-live.md) (fork) |
++| `OPENTODO_VOICE_TRANSCRIBE_MODEL` | `gpt-transcribe` | `gpt-4o-transcribe` | [Live dictation](../voice-live.md) (fork) |
++| `OPENTODO_VOICE_EAGERNESS` | `medium` (how soon a pause ends a phrase) | `low`, `high`, `auto` | [Live dictation](../voice-live.md) (fork) |
++| `OPENTODO_VOICE_INTERPRET_MODEL` | `gpt-5.4-mini` (turns each phrase into task changes) | `gpt-4.1-mini` | [Live dictation](../voice-live.md) (fork) |
++| `OPENTODO_VOICE_INTERPRET_REASONING` | `low` for GPT-5 models, left out otherwise | `none`, `medium`, `off` | [Live dictation](../voice-live.md) (fork) |
+ 
+ ## Outgoing email
+ 
+diff --git a/internal/config/stt.go b/internal/config/stt.go
+--- a/internal/config/stt.go
++++ b/internal/config/stt.go
+@@ -17,6 +17,21 @@
+ 	// Key is read from OPENTODO_STT_KEY_FILE; KeyFromEnv says it was.
+ 	Key        string
+ 	KeyFromEnv bool
++	// Live holds the live dictation's overrides (fork: voice-live); an empty
++	// field takes the default of internal/voice.
++	Live LiveEnv
++}
++
++// LiveEnv is the live dictation's optional variables (fork: voice-live):
++// OPENTODO_VOICE_LIVE=off switches it off; the others name the models and the
++// end-of-phrase eagerness.
++type LiveEnv struct {
++	Off             bool
++	Model           string
++	TranscribeModel string
++	Eagerness       string
++	InterpretModel  string
++	Reasoning       string
+ }
+ 
+ // loadSTT reads the speech-to-text variables; a URL that is not http(s) or an
+@@ -37,5 +52,22 @@
+ 		}
+ 		c.STT.Key, c.STT.KeyFromEnv = strings.TrimSpace(string(b)), true
+ 	}
++	switch v := strings.ToLower(strings.TrimSpace(os.Getenv("OPENTODO_VOICE_LIVE"))); v {
++	case "", "on", "true", "1":
++	case "off", "false", "0":
++		c.STT.Live.Off = true
++	default:
++		return fmt.Errorf("OPENTODO_VOICE_LIVE must be on or off, got %q", v)
++	}
++	c.STT.Live.Model = strings.TrimSpace(os.Getenv("OPENTODO_VOICE_LIVE_MODEL"))
++	c.STT.Live.TranscribeModel = strings.TrimSpace(os.Getenv("OPENTODO_VOICE_TRANSCRIBE_MODEL"))
++	c.STT.Live.InterpretModel = strings.TrimSpace(os.Getenv("OPENTODO_VOICE_INTERPRET_MODEL"))
++	c.STT.Live.Reasoning = strings.TrimSpace(os.Getenv("OPENTODO_VOICE_INTERPRET_REASONING"))
++	switch v := strings.ToLower(strings.TrimSpace(os.Getenv("OPENTODO_VOICE_EAGERNESS"))); v {
++	case "", "low", "medium", "high", "auto":
++		c.STT.Live.Eagerness = v
++	default:
++		return fmt.Errorf("OPENTODO_VOICE_EAGERNESS must be low, medium, high or auto, got %q", v)
++	}
+ 	return nil
+ }
+diff --git a/internal/httpapi/speech/speech.go b/internal/httpapi/speech/speech.go
+--- a/internal/httpapi/speech/speech.go
++++ b/internal/httpapi/speech/speech.go
+@@ -19,6 +19,7 @@
+ 	"github.com/OpenTodoApp/opentodo/internal/audit"
+ 	"github.com/OpenTodoApp/opentodo/internal/httpapi/httpx"
+ 	"github.com/OpenTodoApp/opentodo/internal/stt"
++	"github.com/OpenTodoApp/opentodo/internal/voice"
+ )
+ 
+ // Routes are the speech routes over the owner's transcription service.
+@@ -38,10 +39,15 @@
+ 	mux.Handle("PUT /api/v1/settings/stt", httpx.OwnerOnly("manage the speech-to-text service").Credential().DemoDenied(), s.handlePutSTT)
+ 	mux.Handle("POST /api/v1/settings/stt/test", httpx.OwnerOnly("test the speech-to-text service").Credential().DemoDenied(), s.handleTestSTT)
+ 	mux.Handle("POST /api/v1/voice/transcribe", httpx.SignedIn.FullTokens().DemoDenied(), s.handleTranscribe)
++	// Live dictation (fork: voice-live): the microphone stays open to OpenAI
++	// over WebRTC and each utterance becomes task operations.
++	mux.Handle("POST /api/v1/voice/live", httpx.SignedIn.FullTokens().DemoDenied(), s.handleLive)
++	mux.Handle("POST /api/v1/voice/interpret", httpx.SignedIn.FullTokens().DemoDenied(), s.handleInterpret)
+ }
+ 
+ // Status is what every user learns from /me: whether a service is connected
+-// and its host, named in the recogniser statement.
++// and its host, named in the recogniser statement, and whether it offers the
++// live dictation (OpenAI's API with a key).
+ func (s *Routes) Status(r *http.Request) map[string]any {
+ 	if s.Demo {
+ 		return map[string]any{"connected": false}
+@@ -50,7 +56,11 @@
+ 	if err != nil || !v.Connected {
+ 		return map[string]any{"connected": false}
+ 	}
+-	return map[string]any{"connected": true, "host": v.Host}
++	out := map[string]any{"connected": true, "host": v.Host}
++	if _, _, ok, err := s.STT.Live(r.Context()); err == nil && ok {
++		out["live"] = true
++	}
++	return out
+ }
+ 
+ func (s *Routes) handleGetSTT(w http.ResponseWriter, r *http.Request) {
+@@ -165,3 +175,86 @@
+ 		httpx.Internal(w, s.Log, err)
+ 	}
+ }
++
++// liveService is the connected service when it offers the live dictation; it
++// answers the refusal itself otherwise.
++func (s *Routes) liveService(w http.ResponseWriter, r *http.Request) (root, key string, ok bool) {
++	root, key, ok, err := s.STT.Live(r.Context())
++	if err != nil {
++		httpx.Internal(w, s.Log, err)
++		return "", "", false
++	}
++	if !ok {
++		httpx.WriteError(w, http.StatusConflict, "stt_not_configured", "live dictation needs OpenAI's API connected as the speech service")
++		return "", "", false
++	}
++	if !s.Allow(httpx.UserFrom(r.Context()).ID) {
++		httpx.WriteError(w, http.StatusTooManyRequests, "rate_limited", "too many phrases, wait a minute")
++		return "", "", false
++	}
++	return root, key, true
++}
++
++// handleLive relays the browser's WebRTC offer to OpenAI with the session and
++// the key, and answers OpenAI's description. The audio then goes from the
++// browser to OpenAI; this server never receives it.
++func (s *Routes) handleLive(w http.ResponseWriter, r *http.Request) {
++	var in struct {
++		SDP      string `json:"sdp"`
++		Language string `json:"language"`
++	}
++	if err := httpx.ReadJSONLimit(r, &in, voice.MaxOffer+1024); err != nil {
++		httpx.BadBody(w, err)
++		return
++	}
++	if !voice.ValidOffer(in.SDP) {
++		httpx.WriteError(w, http.StatusBadRequest, "invalid_input", "sdp: send the browser's WebRTC offer with audio")
++		return
++	}
++	if !sttLanguage.MatchString(in.Language) {
++		in.Language = ""
++	}
++	root, key, ok := s.liveService(w, r)
++	if !ok {
++		return
++	}
++	answer, err := voice.Connect(r.Context(), s.STT.Client(), root, key, in.SDP, voice.Session(voice.ConfigFrom(s.STT.LiveEnv()), in.Language))
++	switch {
++	case err == nil:
++		httpx.WriteJSON(w, http.StatusOK, map[string]any{"sdp": answer})
++	case errors.Is(err, stt.ErrUnavailable):
++		httpx.WriteError(w, http.StatusBadGateway, "stt_unavailable", err.Error())
++	default:
++		httpx.Internal(w, s.Log, err)
++	}
++}
++
++// handleInterpret turns one utterance of a live dictation into task
++// operations. The text and the session's tasks pass through memory only.
++func (s *Routes) handleInterpret(w http.ResponseWriter, r *http.Request) {
++	var in voice.Request
++	if err := httpx.ReadJSON(r, &in); err != nil {
++		httpx.BadBody(w, err)
++		return
++	}
++	if _, err := in.Validate(); err != nil {
++		httpx.WriteError(w, http.StatusBadRequest, "invalid_input", err.Error())
++		return
++	}
++	root, key, ok := s.liveService(w, r)
++	if !ok {
++		return
++	}
++	actions, err := voice.Interpret(r.Context(), s.STT.Client(), root, key, voice.ConfigFrom(s.STT.LiveEnv()), in)
++	var fe *voice.FieldError
++	switch {
++	case err == nil:
++		httpx.WriteJSON(w, http.StatusOK, map[string]any{"actions": actions})
++	case errors.As(err, &fe):
++		httpx.WriteError(w, http.StatusBadRequest, "invalid_input", fe.Error())
++	case errors.Is(err, stt.ErrUnavailable):
++		httpx.WriteError(w, http.StatusBadGateway, "stt_unavailable", err.Error())
++	default:
++		httpx.Internal(w, s.Log, err)
++	}
++}
+diff --git a/internal/httpapi/testdata/v1_surface.json b/internal/httpapi/testdata/v1_surface.json
+--- a/internal/httpapi/testdata/v1_surface.json
++++ b/internal/httpapi/testdata/v1_surface.json
+@@ -11094,6 +11094,58 @@
+         "workspace_id": "nullable_string"
+       }
+     },
++    "POST /api/v1/voice/interpret": {
++      "policy": "signed-in.full-tokens",
++      "request": {
++        "labels": "array",
++        "language": "string",
++        "now": "string",
++        "previous": "array",
++        "projects": "array",
++        "tasks": "array",
++        "tasks[].date": "string",
++        "tasks[].deadline": "string",
++        "tasks[].deleted": "boolean",
++        "tasks[].labels": "array",
++        "tasks[].priority": "number",
++        "tasks[].project": "string",
++        "tasks[].recurrence": "string",
++        "tasks[].time": "string",
++        "tasks[].title": "string",
++        "text": "string",
++        "timeZone": "string"
++      },
++      "response": {
++        "actions": "array",
++        "actions[].clear": "array",
++        "actions[].date": "string|null",
++        "actions[].deadline": "string|null",
++        "actions[].labels": "array",
++        "actions[].priority": "number|null",
++        "actions[].project": "string|null",
++        "actions[].recurrence": "string|null",
++        "actions[].ref": "number|null",
++        "actions[].time": "string|null",
++        "actions[].title": "string|null",
++        "actions[].type": "string"
++      },
++      "statuses": [
++        "200"
++      ]
++    },
++    "POST /api/v1/voice/live": {
++      "policy": "signed-in.full-tokens",
++      "request": {
++        "language": "string",
++        "sdp": "string"
++      },
++      "response": {
++        "sdp": "string"
++      },
++      "statuses": [
++        "200"
++      ]
++    },
+     "POST /api/v1/voice/transcribe": {
+       "policy": "signed-in.full-tokens",
+       "response": {
+diff --git a/internal/stt/stt.go b/internal/stt/stt.go
+--- a/internal/stt/stt.go
++++ b/internal/stt/stt.go
+@@ -72,7 +72,13 @@
+ 	secrets *settings.SecretsFile
+ 	env     config.STTConfig
+ 	client  *http.Client
+-}
++	// liveHosts are hosts the tests let stand in for LiveHost.
++	liveHosts []string
++}
++
++// LiveHost is the one service with the realtime and chat routes the live
++// dictation needs (fork: voice-live): OpenAI's API.
++const LiveHost = "api.openai.com"
+ 
+ // New builds the service; allowPrivate is the owner's private-network switch.
+ func New(store *settings.Store, dataDir string, env config.STTConfig, allowPrivate func(context.Context) bool) *Service {
+@@ -82,6 +88,53 @@
+ 
+ // SetClient replaces the HTTP client (tests).
+ func (s *Service) SetClient(c *http.Client) { s.client = c }
++
++// SetLiveHosts lets the given hosts stand in for LiveHost (tests).
++func (s *Service) SetLiveHosts(hosts ...string) { s.liveHosts = hosts }
++
++// Client is the outbound client the service uses; the live routes share it.
++func (s *Service) Client() *http.Client { return s.client }
++
++// LiveEnv is the live dictation's variables.
++func (s *Service) LiveEnv() config.LiveEnv { return s.env.Live }
++
++// Live is what the live dictation needs from the connected service (fork:
++// voice-live): the API root (the URL without /v1) and the key. ok is false
++// unless the service is OpenAI's API with a key and live dictation is not
++// switched off.
++func (s *Service) Live(ctx context.Context) (root, key string, ok bool, err error) {
++	if s.env.Live.Off {
++		return "", "", false, nil
++	}
++	r, err := s.resolve(ctx)
++	if err != nil {
++		return "", "", false, err
++	}
++	u, perr := url.Parse(r.url)
++	if r.url == "" || r.key == "" || perr != nil || !s.liveHost(u.Host) {
++		return "", "", false, nil
++	}
++	return apiRoot(r.url), r.key, true, nil
++}
++
++func (s *Service) liveHost(host string) bool {
++	if host == LiveHost {
++		return true
++	}
++	for _, h := range s.liveHosts {
++		if h == host {
++			return true
++		}
++	}
++	return false
++}
++
++// apiRoot is a service URL without a trailing /v1: the transcription and the
++// live routes append their own /v1/… path, so "https://api.openai.com/v1" and
++// "https://api.openai.com" both work.
++func apiRoot(raw string) string {
++	return strings.TrimSuffix(strings.TrimRight(raw, "/"), "/v1")
++}
+ 
+ type resolved struct {
+ 	url, model, key string
+@@ -227,7 +280,7 @@
+ 	}
+ 	ctx, cancel := context.WithTimeout(ctx, Timeout)
+ 	defer cancel()
+-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.url+"/v1/audio/transcriptions", &body)
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiRoot(r.url)+"/v1/audio/transcriptions", &body)
+ 	if err != nil {
+ 		return "", fmt.Errorf("%w: %v", ErrUnavailable, err)
+ 	}
+diff --git a/web/src/app/QuickAdd.tsx b/web/src/app/QuickAdd.tsx
+--- a/web/src/app/QuickAdd.tsx
++++ b/web/src/app/QuickAdd.tsx
+@@ -13,7 +13,9 @@
+   chipAtCaret, type Chip, dismissChip, type LabelRef, loadQuickAddSettings, onQuickAddSettingsChange, parse,
+   type ParseContext, type ProjectRef, type QuickAddInput, type QuickAddSettings, rebaseDismissed, resolveDayMonthOrder, resolveLanguages, type Span, toTaskInput,
+ } from '../lib/nlp'
+-import { useDictation } from './useDictation'
++import { type LiveDictationHost, useDictation } from './useDictation'
++import { updateTask } from '../lib/ops'
++import { useEncryption } from '../lib/e2ee'
+ import { useTokenSuggest } from './TokenSuggest'
+ import { ParseChips } from './ParseChips'
+ import { QuickAddTint } from './QuickAddTint'
+@@ -39,7 +41,12 @@
+ }
+ 
+ 
+-/** The picker's helper; a label created meanwhile (another tab, a sync) is reused. */
++/** The task the voice session made last: what a spoken correction edits. */
++type LastTask = { id: string; title: string; due: { date: string; time?: string } | null }
++
++/**
++ * The picker's helper; a label created meanwhile (another tab, a sync) is reused.
++ */
+ export async function createLabelByName(name: string): Promise<string> {
+   try {
+     return await createLabel({ name })
+@@ -113,6 +120,95 @@
+   }, [settings, projects, dtPrefs, resolved, dayParts, energy, sectors])
+ }
+ 
++/** A task a spoken correction can change: its title and its day. */
++type Spoken = { title: string; due: { date: string; time?: string } | null }
++
++/** What the local parser makes of a phrase: a new task, or the fields it changes on the last one. */
++type SpokenReading = { input: QuickAddInput } | { patch: { title?: string; due?: { date: string; time?: string } } }
++
++/**
++ * Spoken phrases as tasks. `read` is the local reading (voice-ramble-parity): the
++ * same parser as a typed line, and a phrase that corrects the last task ("no, a
++ * las tres y media y con Marcos") changes it instead of making another. The
++ * field dictation writes each reading at once (`onPhrase`). The live dictation
++ * (fork: voice-live) keeps drafts until the person adds them: `live` reads a
++ * phrase its interpreter could not, and saves the confirmed drafts with quick
++ * add's own add, as one batch with one Undo where quick add has one.
++ */
++function useSpokenTasks({ context, dismissed, logDone, labels, onAdd, onAddMany, onVoiceAdded }: {
++  context: () => Omit<ParseContext, 'dismissed'> | null
++  dismissed: Span[]
++  logDone: boolean
++  labels: readonly LabelRef[]
++  onAdd: (input: QuickAddInput) => Promise<string | void> | string | void
++  onAddMany?: (inputs: QuickAddInput[]) => Promise<void> | void
++  onVoiceAdded?: () => void
++}) {
++  const encrypted = useEncryption().enabled
++  // The task the voice session made last (or the last typed one), so a spoken correction edits it.
++  const lastTask = useRef<LastTask | null>(null)
++
++  async function read(text: string, last: Spoken | null): Promise<SpokenReading | null> {
++    const line = text.trim()
++    if (!line) return null
++    // The spoken-correction rules are loaded with the first phrase, not with the app.
++    const c = await import('../lib/voice/correction')
++    if (last && c.isCorrection(line)) {
++      const patch = correction(c, last, line)
++      return patch ? { patch } : null
++    }
++    // Without a task to correct, "no, …" is still not part of the title.
++    const said = c.normalizeSpokenClock(c.isCorrection(line) ? c.stripCorrection(line) : line)
++    const { parsed } = parseLine(said, context(), dismissed, logDone)
++    const fixed = parsed && parsed.due?.time ? { ...parsed, due: { ...parsed.due, time: c.shiftHour(parsed.due.time, said) } } : parsed
++    const input: QuickAddInput = fixed && fixed.title ? await toTaskInput(fixed, { labels, createLabel: createLabelByName }) : { title: line }
++    if (input.title) input.title = c.capitalize(input.title)
++    return { input }
++  }
++
++  /** A spoken correction of `last` as the fields it changes; null when it changes nothing. */
++  function correction(c: typeof import('../lib/voice/correction'), last: Spoken, line: string) {
++    const body = c.stripCorrection(c.normalizeSpokenClock(line))
++    if (!body) return null
++    const { parsed } = parseLine(body, context(), dismissed, logDone)
++    const patch: { title?: string; due?: { date: string; time?: string } } = {}
++    if (parsed?.due) {
++      const keepDate = last.due?.date && !c.mentionsDate(body)
++      const date = keepDate ? last.due!.date : parsed.due.date
++      const time = parsed.due.time ? c.shiftHour(parsed.due.time, body) : last.due?.time ?? parsed.due.time
++      patch.due = { date, ...(time ? { time } : {}) }
++    }
++    const title = c.capitalize(c.mergeTitle(last.title, parsed?.title ?? ''))
++    if (title && title !== last.title) patch.title = title
++    return patch.title || patch.due ? patch : null
++  }
++
++  /** The field dictation: a phrase is written at once, and a correction edits the last task. */
++  async function add(text: string, last: LastTask | null): Promise<void> {
++    const reading = await read(text, last)
++    if (!reading) return
++    if ('patch' in reading) {
++      if (!last) return
++      await updateTask(last.id, reading.patch)
++      lastTask.current = { ...last, title: reading.patch.title ?? last.title, due: reading.patch.due ?? last.due }
++      return
++    }
++    const created = await onAdd(reading.input)
++    if (typeof created === 'string') lastTask.current = { id: created, title: reading.input.title, due: reading.input.due ?? null }
++  }
++
++  const live: LiveDictationHost = {
++    addAll: async (inputs) => {
++      if (onAddMany) await onAddMany(inputs)
++      else for (const input of inputs) await onAdd(input)
++    },
++    fallback: (text, last) => read(text, last),
++    shareNames: () => !encrypted,
++    added: () => onVoiceAdded?.(),
++  }
++  return { live, lastTask, onPhrase: (text: string) => { void add(text, lastTask.current) } }
++}
++
+ /**
+  * One-line capture. With natural-language parsing on (per-device setting), the
+  * line is parsed on every keystroke and each recognised attribute is shown as a
+@@ -130,7 +226,7 @@
+   projects?: readonly ProjectRef[]
+   /** Every label (deleted ones are ignored) for resolving and colouring `@name` chips. */
+   labels?: readonly LabelRef[]
+-  onAdd: (input: QuickAddInput) => Promise<void> | void
++  onAdd: (input: QuickAddInput) => Promise<string | void> | string | void
+   /** Prefilled line (the capture screen proposes the shared page's title); parsed like typed text. */
+   initialValue?: string
+   /** Form id, so a button elsewhere can submit it with `form=`. */
+@@ -144,7 +240,7 @@
+   voiceShortcut?: boolean
+   layout?: 'line' | 'palette' | 'sheet'
+   /** Shift+Enter in the palette: add, then open the new task. */
+-  onAddAndOpen?: (input: QuickAddInput) => Promise<void> | void
++  onAddAndOpen?: (input: QuickAddInput) => Promise<string | void> | string | void
+   /** The palette footer's Escape: its label (Close or Back) and action. */
+   escape?: { label: string; run: () => void }
+   /**
+@@ -156,7 +252,9 @@
+   logDone?: boolean
+   /** Whether Shift+Enter opens the notes field (quick-add-notes D2); off where the screen has its own notes, and in the palette, whose Shift+Enter adds and opens. */
+   notes?: boolean
+-}>(function QuickAdd({ placeholder, projects = [], labels = [], onAdd, initialValue, formId, hideHint, autoFocus, label, voiceShortcut, layout = 'line', onAddAndOpen, escape, onAddMany, logDone, notes: notesOn = true }, ref) {
++  /** After the live dictation's tasks were added (fork: voice-live): the phone's sheet closes. */
++  onVoiceAdded?: () => void
++}>(function QuickAdd({ placeholder, projects = [], labels = [], onAdd, initialValue, formId, hideHint, autoFocus, label, voiceShortcut, layout = 'line', onAddAndOpen, escape, onAddMany, logDone, notes: notesOn = true, onVoiceAdded }, ref) {
+   // The `q` badge is printed only while "Show shortcut hints" is on (keyboard-shortcuts).
+   const hints = useShortcutHints()
+   const [value, setValue] = useState(initialValue ?? '')
+@@ -203,9 +301,8 @@
+   // Unmatched #tokens are explained once the caret has left them (natural-language-capture "Unmatched tokens are explained").
+   const misses = (parsed?.unmatched ?? []).filter((m) => !suggest.open || caretOutside(inputRef.current, m.span))
+ 
+-  const voice = useDictation({
+-    inputRef, getText: () => valueRef.current, setText: change, settings, projects, labels, shortcut: voiceShortcut,
+-  })
++  const spoken = useSpokenTasks({ context, dismissed, logDone: !!logDone, labels, onAdd, onAddMany, onVoiceAdded })
++  const voice = useDictation({ inputRef, getText: () => valueRef.current, setText: change, settings, projects, labels, shortcut: voiceShortcut, onPhrase: spoken.onPhrase, live: spoken.live })
+ 
+   function dismiss(chip: Chip) {
+     setDismissed((d) => dismissChip(d, chip))
+@@ -257,7 +354,8 @@
+     // Unknown @names become labels first (one op each), then the task references their ids.
+     const parsedInput: QuickAddInput = snapshot ? await toTaskInput(snapshot, { labels, createLabel: createLabelByName }) : { title: line }
+     const input = description ? { ...parsedInput, description } : parsedInput
+-    await (open && onAddAndOpen ? onAddAndOpen(input) : onAdd(input))
++    const created = await (open && onAddAndOpen ? onAddAndOpen(input) : onAdd(input))
++    if (typeof created === 'string') spoken.lastTask.current = { id: created, title: input.title ?? line, due: input.due ?? null }
+   }
+ 
+   // A pasted list (paste-to-tasks D1): offered as one task per line, or pasted as one line.
+@@ -373,7 +471,7 @@
+         <NotesLine ref={notesField.ref} value={notes} onChange={notesField.setNotes} onClose={notesField.close}
+           className={layout === 'sheet' ? 'px-3 pb-2' : 'pl-5'} size={size} />
+       )}
+-      {voice.enabled && <VoiceNotice voice={voice} />}
++      {voice.enabled && <VoiceNotice voice={voice} projects={projects} labels={labels} />}
+       {palette && <>
+         <div id="quick-add-preview" role="status" aria-live="polite">
+           <FieldRows rows={rows} highlight={row} chipHighlight={highlight} projects={projects} labels={labels} line={lineInfo} onEdit={edit} onDismiss={(r) => r.chip && dismiss(r.chip)} />
+diff --git a/web/src/app/QuickAddSheet.tsx b/web/src/app/QuickAddSheet.tsx
+--- a/web/src/app/QuickAddSheet.tsx
++++ b/web/src/app/QuickAddSheet.tsx
+@@ -62,8 +62,9 @@
+   const [added, setAdded] = useState(0)
+   const onAdd = async (input: QuickAddInput) => {
+     // Top or bottom of the list it lands in (add-position D3).
+-    await addToList({ ...withDefaults(input), placement: await preferredPlacement() }, createTaskThenSuggest)
++    const id = await addToList({ ...withDefaults(input), placement: await preferredPlacement() }, createTaskThenSuggest)
+     setAdded((n) => n + 1)
++    return id
+   }
+   // A pasted list (paste-to-tasks D3): one batch with the view's defaults per line, one Undo.
+   const onAddMany = async (inputs: QuickAddInput[]) => {
+@@ -77,7 +78,8 @@
+     <Popover open={open} onClose={onClose} anchor={anchor} label={t('Add a task')} side="top" align="end" width="sm:w-96" className="pt-3 pb-0">
+       <div data-quick-add-sheet>
+         <span className="sr-only" role="status" aria-live="polite" data-sheet-added>{added > 0 && <span key={added}>{t('Added')}</span>}</span>
+-        <QuickAdd layout="sheet" autoFocus hideHint initialValue={prefill ?? undefined} placeholder={t('Add a task…')} label={t('Add a task')} projects={projects} labels={labels} onAdd={onAdd} onAddMany={onAddMany} />
++        {/* A dictation's tasks are added together, when the person is done: the sheet closes (fork: voice-live). */}
++        <QuickAdd layout="sheet" autoFocus hideHint initialValue={prefill ?? undefined} placeholder={t('Add a task…')} label={t('Add a task')} projects={projects} labels={labels} onAdd={onAdd} onAddMany={onAddMany} onVoiceAdded={onClose} />
+       </div>
+     </Popover>
+   )
+diff --git a/web/src/app/Sections.tsx b/web/src/app/Sections.tsx
+--- a/web/src/app/Sections.tsx
++++ b/web/src/app/Sections.tsx
+@@ -210,6 +210,7 @@
+     const list = root.current?.closest<HTMLElement>('[data-list-page]')
+     // Loaded with the first add: not needed on first load (web/bundle-budget.json).
+     if (target === project.id && list) void import('./task-list/announceAdded').then((m) => m.announceIfOutOfSight(id, { list: sectionName, placement, root: list, select: (x) => selectTask.request(x) })).catch(() => {}) // offline before it was cached: no announcement
++    return id
+   }
+   // A pasted list (paste-to-tasks D3): every line in this section unless it names a #project; one batch, one Undo.
+   const onAddMany = async (inputs: QuickAddInput[]) => {
+diff --git a/web/src/app/TaskListView.tsx b/web/src/app/TaskListView.tsx
+--- a/web/src/app/TaskListView.tsx
++++ b/web/src/app/TaskListView.tsx
+@@ -312,8 +312,8 @@
+     const [task] = await withDefaults([input])
+     const id = await createUnlessReused({ placement, ...task }, createTaskThenSuggest) // null: a reusable list reused an item (reusable-lists D3)
+     // The `o` move, the Inbox's note, or the note for a row out of sight (add-position D5).
+-    const list = listTitle(route.view, m.currentProject?.name, m.currentLabel?.name, m.currentPlace?.name)
+-    if (id) await afterListAdd(id, { route, today, insertAfter, sectionMap: latestSectionMap, list, placement: projectManual ? placement : undefined, root: listRoot.current, select: setSelectedId })
++    if (id) await afterListAdd(id, { route, today, insertAfter, sectionMap: latestSectionMap, list: listTitle(route.view, m.currentProject?.name, m.currentLabel?.name, m.currentPlace?.name), placement: projectManual ? placement : undefined, root: listRoot.current, select: setSelectedId })
++    return id ?? undefined // to quick add, so a spoken correction can edit this task (voice-ramble-parity)
+   }, [withDefaults, route, today, latestSectionMap, projectManual, m.currentProject, m.currentLabel, m.currentPlace, setSelectedId])
+   // A pasted list (paste-to-tasks D3): every line with the view's defaults, one batch, one Undo.
+   const onAddMany = useCallback(async (inputs: QuickAddInput[]) => {
+diff --git a/web/src/app/VoiceSettings.tsx b/web/src/app/VoiceSettings.tsx
+--- a/web/src/app/VoiceSettings.tsx
++++ b/web/src/app/VoiceSettings.tsx
+@@ -8,7 +8,7 @@
+ import { BUNDLED_LANGUAGES, loadQuickAddSettings, resolveLanguages } from '../lib/nlp'
+ import { useEncryption } from '../lib/e2ee'
+ import { loadVoiceSettings, onVoiceSettingsChange, type Recognizer, saveVoiceSettings, type VoiceSettings } from '../lib/voice/settings'
+-import { canRecord, useSpeechService } from '../lib/voice/speechService'
++import { canLive, canRecord, useSpeechService } from '../lib/voice/speechService'
+ import { isSupported } from '../lib/voice/support'
+ import { languageName } from '../locales'
+ import { t, preferredLanguages } from '../lib/i18n'
+@@ -31,7 +31,18 @@
+  * The statement for the server's speech service (settings-refresh D7): where the
+  * phrase goes, named by the service's host, and that nothing is kept.
+  */
+-export function ServerSpeechStatement({ host, encrypted }: { host: string; encrypted: boolean }) {
++export function ServerSpeechStatement({ host, encrypted, live = false }: { host: string; encrypted: boolean; live?: boolean }) {
++  // Fork (voice-live): with OpenAI's API the microphone stays open to it and each phrase becomes tasks.
++  if (live) {
++    return (
++      <ul className="list-disc space-y-1 pl-5 text-body text-default" data-server-speech-statement data-live>
++        <li>{t('While the microphone is on, this browser sends your voice straight to {host}, which tells the phrases apart and writes them down.', { host })}</li>
++        <li>{t('The text of each phrase goes through your OpenTodo server to the same service, which turns it into tasks: new ones, or changes to the ones you just dictated.')}</li>
++        <li>{t('Neither the server nor the app keeps the audio or the text. The tasks are saved and synced like typed ones.')}</li>
++        {encrypted && <li>{t('Your account is end-to-end encrypted: your project and label names are not sent, and while a request runs its text is readable by this server and the speech service.')}</li>}
++      </ul>
++    )
++  }
+   return (
+     <ul className="list-disc space-y-1 pl-5 text-body text-default" data-server-speech-statement>
+       <li>{t('Each phrase is recorded in this browser while the microphone is on, then sent once to your OpenTodo server.')}</li>
+@@ -47,16 +58,18 @@
+ 
+ /** Settings section for voice capture; stored on this device only, never synced. */
+ /** The consent asked before voice capture turns on or changes recogniser (the statement of who hears the audio). */
+-export function VoiceConsentDialog({ confirming, host, encrypted, onCancel, onConfirm }: {
++export function VoiceConsentDialog({ confirming, host, encrypted, live = false, onCancel, onConfirm }: {
+   confirming: NonNullable<Confirming>
+   host: string
+   encrypted: boolean
++  /** The server offers the live dictation (fork: voice-live). */
++  live?: boolean
+   onCancel: () => void
+   onConfirm: () => void
+ }) {
+   return (
+     <Dialog title={confirming.enable ? t('Turn on voice capture?') : t('Change who recognises speech?')} onClose={onCancel} size="md" testId="voice-statement">
+-      {confirming.recognizer === 'server' ? <ServerSpeechStatement host={host} encrypted={encrypted} /> : <VoicePrivacyStatement />}
++      {confirming.recognizer === 'server' ? <ServerSpeechStatement host={host} encrypted={encrypted} live={live} /> : <VoicePrivacyStatement />}
+       <div className="mt-4 flex justify-end gap-2">
+         <Button variant="ghost" onClick={onCancel}>{t('Cancel')}</Button>
+         <Button variant="primary" data-autofocus data-voice-confirm onClick={onConfirm}>
+@@ -116,7 +129,7 @@
+         } />
+       )}
+       {confirming && (
+-        <VoiceConsentDialog confirming={confirming} host={service.host ?? ''} encrypted={encrypted} onCancel={() => setConfirming(null)}
++        <VoiceConsentDialog confirming={confirming} host={service.host ?? ''} encrypted={encrypted} live={!!service.live && canLive()} onCancel={() => setConfirming(null)}
+           onConfirm={() => { update({ ...s, enabled: true, recognizer: confirming.recognizer }); setConfirming(null) }} />
+       )}
+     </SettingsSection>
+diff --git a/web/src/app/quickadd/VoiceParts.tsx b/web/src/app/quickadd/VoiceParts.tsx
+--- a/web/src/app/quickadd/VoiceParts.tsx
++++ b/web/src/app/quickadd/VoiceParts.tsx
+@@ -1,11 +1,16 @@
+ // Quick add's dictation controls (voice-capture), kept out of the QuickAdd body: the
+ // microphone button at the end of the line, and the status and message under it.
++// Fork (voice-live): the live dictation's panel, loaded with the first dictation.
++import { lazy, Suspense } from 'react'
+ import { keysOf } from '../../lib/shortcuts'
+ import { t } from '../../lib/i18n'
++import type { LabelRef, ProjectRef } from '../../lib/nlp'
+ import { Icon, Tooltip } from '../../ui'
+ import type { useDictation } from '../useDictation'
+ 
+ type Voice = ReturnType<typeof useDictation>
++
++const LivePanel = lazy(() => import('./LivePanel'))
+ 
+ /** The microphone button; it never takes focus, since the transcript goes where the caret is. */
+ export function VoiceButton({ voice, shortcut }: { voice: Voice; shortcut?: boolean }) {
+@@ -28,10 +33,22 @@
+ }
+ 
+ /** The spoken status and, when recognition needs the user, its message with Dismiss. */
+-export function VoiceNotice({ voice }: { voice: Voice }) {
++export function VoiceNotice({ voice, projects = [], labels = [] }: { voice: Voice; projects?: readonly ProjectRef[]; labels?: readonly LabelRef[] }) {
++  if (voice.live) {
++    return (
++      <Suspense fallback={null}>
++        <LivePanel voice={{ live: voice.live, closeLive: voice.closeLive, undo: voice.undo, add: voice.add }} projects={projects} labels={labels} />
++      </Suspense>
++    )
++  }
+   return (
+     <>
+       <span className="sr-only" role="status" aria-live="polite" data-voice-status>{voice.view.announcement}</span>
++      {voice.view.status !== 'idle' && (
++        <span className="mt-1 block pl-6 text-meta text-muted" data-voice-state>
++          {voice.view.status === 'starting' ? t('Starting…') : t('Listening…')}
++        </span>
++      )}
+       {voice.view.message && (
+         <p className="mt-1 flex items-start gap-2 pl-6 text-meta text-on-warning-soft" data-voice-message>
+           <span className="flex-1">{voice.view.message}</span>
+diff --git a/web/src/app/useDictation.ts b/web/src/app/useDictation.ts
+--- a/web/src/app/useDictation.ts
++++ b/web/src/app/useDictation.ts
+@@ -1,9 +1,11 @@
+ import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react'
+-import { type LabelRef, type ProjectRef, resolveLanguages, type QuickAddSettings } from '../lib/nlp'
++import { type LabelRef, type ProjectRef, type QuickAddInput, resolveLanguages, type QuickAddSettings } from '../lib/nlp'
+ import type { Dictation, DictationView } from '../lib/voice/dictation'
++import type { LocalReading, SessionTask, VoiceSession, VoiceSessionView } from '../lib/voice/voiceSession'
+ import { loadVoiceSettings, onVoiceSettingsChange, recognitionLanguage, recognitionTag } from '../lib/voice/settings'
+ import { isSupported } from '../lib/voice/support'
+-import { canRecord, useSpeechService } from '../lib/voice/speechService'
++import { canLive, canRecord, useSpeechService } from '../lib/voice/speechService'
++import { primeAudio } from '../lib/voice/audioPrime'
+ import { useShortcutScope } from './shortcuts'
+ import { preferredLanguages } from '../lib/i18n'
+ 
+@@ -18,11 +20,40 @@
+ 
+ const IDLE: DictationView = { status: 'idle', announcement: '', message: null }
+ 
++/** The recognition tag: the dictation language when one is chosen, else the browser's (the one the person speaks). */
++function recognitionTagFor(settings: QuickAddSettings, voice: { lang: string | null }): string {
++  const langs = resolveLanguages(settings, preferredLanguages())
++  const chosen = recognitionLanguage(voice, langs)
++  // Without a dictation language chosen, the browser's: the one the person speaks.
++  const base = voice.lang ? chosen : preferredLanguages()[0] ?? chosen
++  return recognitionTag(base, preferredLanguages())
++}
++
++/**
++ * What the live dictation (fork: voice-live) works through: quick add's own add for
++ * the drafts the person confirms, and the local parser for a phrase the interpreter
++ * could not read.
++ */
++export interface LiveDictationHost {
++  /** Saves the confirmed drafts, with the view's defaults (one batch and one Undo where quick add can). */
++  addAll(inputs: QuickAddInput[]): Promise<void>
++  fallback(text: string, last: SessionTask | null): Promise<LocalReading | null>
++  /** Whether project and label names may go to the interpreter. */
++  shareNames(): boolean
++  /** After the drafts were saved. */
++  added?(): void
++}
++
+ /**
+  * Voice dictation for one quick-add input (OpenSpec `voice-capture`). Off unless the
+  * per-device setting is on and the browser has speech recognition. The transcript is
+  * written through `setText`, the same path as typing, so parsing and chips apply;
+  * nothing is ever submitted from here.
++ *
++ * Fork (voice-live): when the server's speech service is OpenAI's API, the
++ * microphone instead starts a live dictation — it stays open, every phrase
++ * becomes a draft task or changes one, Add saves the drafts, and `live` is the
++ * panel's state.
+  */
+ export function useDictation(opts: {
+   inputRef: RefObject<HTMLInputElement | HTMLTextAreaElement | null>
+@@ -33,6 +64,10 @@
+   labels: readonly LabelRef[]
+   /** Listen for the global Shift+V shortcut (only the main quick add of a view). */
+   shortcut?: boolean
++  /** A whole spoken phrase: the caller turns it into a task (voice session, Ramble parity). */
++  onPhrase?: (text: string) => void
++  /** The live dictation's writes; without it the microphone dictates into the field. */
++  live?: LiveDictationHost
+ }) {
+   const [voice, setVoice] = useState(loadVoiceSettings)
+   useEffect(() => onVoiceSettingsChange(() => setVoice(loadVoiceSettings())), [])
+@@ -40,22 +75,42 @@
+   const service = useSpeechService(voice.enabled && voice.recognizer === 'server')
+   // The server's service needs a connected service and a recorder; the browser's needs recognition.
+   const server = voice.recognizer === 'server' && service.connected && canRecord()
+-  const enabled = voice.enabled && (server || (voice.recognizer === 'browser' && isSupported()))
++  const liveOn = voice.enabled && voice.recognizer === 'server' && service.connected && service.live === true && !!opts.live && canLive()
++  const enabled = voice.enabled && (liveOn || server || (voice.recognizer === 'browser' && isSupported()))
+   const [view, setView] = useState<DictationView>(IDLE)
++  const [liveView, setLiveView] = useState<VoiceSessionView | null>(null)
+   const latest = useRef(opts)
+   latest.current = opts
+   const voiceRef = useRef(voice)
+   voiceRef.current = voice
+   const caret = useRef<number | null>(null)
+   const dictation = useRef<Dictation | null>(null)
++  const session = useRef<VoiceSession | null>(null)
+ 
+   useEffect(() => {
+     if (!enabled) return
+     let cancelled = false
+     let d: Dictation | null = null
++    let v: VoiceSession | null = null
++    const langTag = () => recognitionTagFor(latest.current.settings, voiceRef.current)
+     // The engine is a separate chunk, loaded only when voice capture is on (D7).
+-    void import('../lib/voice/engine').then(({ createDictation, normalizeSpoken, startServerRecognition }) => {
++    void import('../lib/voice/engine').then(({ createDictation, createVoiceSession, normalizeSpoken, startServerRecognition }) => {
+       if (cancelled) return
++      if (liveOn) {
++        const host = () => latest.current.live!
++        v = createVoiceSession({
++          lang: langTag,
++          projects: () => latest.current.projects,
++          labels: () => latest.current.labels,
++          shareNames: () => host().shareNames(),
++          addAll: (inputs) => host().addAll(inputs),
++          fallback: (text, last) => host().fallback(text, last),
++          added: () => host().added?.(),
++          show: setLiveView,
++        })
++        session.current = v
++        return
++      }
+       d = createDictation({
+         getValue: () => latest.current.getText(),
+         getSelection: () => {
+@@ -72,22 +127,23 @@
+           const langs = resolveLanguages(o.settings, preferredLanguages())
+           return normalizeSpoken(text, [recognitionLanguage(voiceRef.current, langs), ...langs], { projects: o.projects, labels: o.labels })
+         },
+-        lang: () => {
+-          const langs = resolveLanguages(latest.current.settings, preferredLanguages())
+-          return recognitionTag(recognitionLanguage(voiceRef.current, langs), preferredLanguages())
+-        },
++        lang: langTag,
+         languageName,
+         update: setView,
+-      }, server ? startServerRecognition : undefined)
++        onPhrase: (text) => latest.current.onPhrase?.(text),
++      }, server ? startServerRecognition : undefined, undefined, { session: true })
+       dictation.current = d
+     })
+     return () => {
+       cancelled = true
+       d?.dispose()
++      v?.dispose()
+       dictation.current = null
++      session.current = null
+       setView(IDLE)
+-    }
+-  }, [enabled, server])
++      setLiveView(null)
++    }
++  }, [enabled, server, liveOn])
+ 
+   // Keep the caret where the dictation put it after React re-renders the input.
+   useLayoutEffect(() => {
+@@ -100,15 +156,34 @@
+     caret.current = null
+   })
+ 
+-  const active = view.status !== 'idle'
++  // Listening (or starting): not while the drafts are being added, when the microphone is already off.
++  const liveActive = !!liveView && liveView.status !== 'idle' && liveView.status !== 'adding'
++  const active = view.status !== 'idle' || liveActive
++
++  // A phone that leaves the page drops the microphone anyway: end the dictation cleanly.
++  useEffect(() => {
++    if (!liveActive) return
++    const onHide = () => { if (document.visibilityState === 'hidden') session.current?.stop() }
++    document.addEventListener('visibilitychange', onHide)
++    return () => document.removeEventListener('visibilitychange', onHide)
++  }, [liveActive])
+ 
+   // Escape stops listening before any other Escape behaviour (closing panels, blurring): a capturing frame.
+-  useShortcutScope('list', { 'list.dictate-stop': () => { dictation.current?.stop() } }, { capture: true, enabled: active })
++  useShortcutScope('list', { 'list.dictate-stop': () => { stop() } }, { capture: true, enabled: active })
+ 
+   // Shift+V outside text fields starts dictation into this quick add.
+   useShortcutScope('list', { 'list.dictate': () => { start() } }, { enabled: enabled && !!opts.shortcut })
+ 
+   function start() {
++    if (session.current) {
++      // The live dictation writes tasks, not the field: the keyboard goes away so the panel shows.
++      latest.current.inputRef.current?.blur()
++      session.current.start()
++      return
++    }
++    // Inside the click's gesture: an AudioContext created after getUserMedia is
++    // left suspended by the browser, and the phrase never closes on its own.
++    primeAudio()
+     const el = latest.current.inputRef.current
+     if (el && document.activeElement !== el) {
+       el.focus()
+@@ -118,11 +193,24 @@
+     dictation.current?.start()
+   }
+ 
++  function stop() {
++    if (session.current) session.current.stop()
++    else dictation.current?.stop()
++  }
++
+   return {
+     enabled,
+     view,
++    /** The live dictation's panel state (fork: voice-live), or null in the field dictation. */
++    live: liveView,
+     listening: active,
+-    toggle: () => (active ? dictation.current?.stop() : start()),
++    toggle: () => (active ? stop() : start()),
+     dismissMessage: () => dictation.current?.dismissMessage(),
+-  }
+-}
++    /** Takes a draft of the live dictation out. */
++    undo: (id: string) => session.current?.undo(id),
++    /** Stops listening and adds the live dictation's drafts. */
++    add: () => session.current?.add() ?? Promise.resolve(),
++    /** Stops the live dictation and drops its drafts (Discard). */
++    closeLive: () => session.current?.close(),
++  }
++}
+diff --git a/web/src/lib/api.ts b/web/src/lib/api.ts
+--- a/web/src/lib/api.ts
++++ b/web/src/lib/api.ts
+@@ -16,6 +16,8 @@
+   SpeechService,
+   SpeechSettings,
+   SpeechSettingsInput,
++  VoiceAction,
++  VoiceInterpretRequest,
+   ConfigWarning,
+   AppPassword, CaldavSetting, EmailDigest, EmailDigestInput, EmailInbox,
+   AccountRole, ActivityPage, AttachmentLimits, AttachmentSettings, StorageStatus, CalendarEvent, CalendarFeed, CalendarSubscription, AdminUser, AppNotification, AuditEvent, AuditFilters, AuditSettings, AuthStatus, LinkedIdentity, OidcSettings, OidcSettingsInput, OidcStatus, OidcTestResult, BackupSecretFlags, BackupSecretUpdate, BackupSettings, BackupStatus, RestoreArchive, RestoreSource, RestoreState, StagedRestore, ImportJob, ImportOptions, ImportPreview, Invitation, InvitationPreview, LoginResult, HistoryPage, PendingSignup, SmtpSettings, SmtpSettingsInput, SmtpTestResult, Membership, MfaPolicy, ProjectInvite, ProjectInvitePreview, MfaStatus, Op, Passkey, ProjectRole, PurgeCounts, PushSubscriptionStatus, PushTestResponse, ResetPreview, SyncResponse, TrustedDevice, User, PublicLink, PublicList,
+@@ -655,6 +657,10 @@
+   testSpeechSettings: (draft: SpeechSettingsInput) => request<{ ok: boolean; text?: string; error?: string }>('POST', '/api/v1/settings/stt/test', draft),
+   transcribe: (phrase: Blob, language: string, seconds: number) =>
+     sendRaw<{ text: string }>('POST', `/api/v1/voice/transcribe?language=${encodeURIComponent(language)}&seconds=${Math.ceil(seconds)}`, phrase, 40_000),
++  // Live dictation (fork: voice-live): the browser's WebRTC offer relayed to
++  // OpenAI, and one utterance turned into task operations.
++  voiceLive: (sdp: string, language: string) => request<{ sdp: string }>('POST', '/api/v1/voice/live', { sdp, language }),
++  voiceInterpret: (input: VoiceInterpretRequest) => request<{ actions: VoiceAction[] }>('POST', '/api/v1/voice/interpret', input),
+ 
+   // Import runs on the server (docs/import.md): preview is a dry run, start returns a running job.
+   previewImport: (file: Blob, filename: string, options: ImportOptions) =>
+diff --git a/web/src/lib/types.ts b/web/src/lib/types.ts
+--- a/web/src/lib/types.ts
++++ b/web/src/lib/types.ts
+@@ -1186,7 +1186,52 @@
+  * account data, never an op. `avatarVersion` is 0 without a picture.
+  */
+ /** Whether the owner connected a speech service, and its host (settings-refresh D7). */
+-export interface SpeechService { connected: boolean; host?: string }
++/** `live`: the service is OpenAI's API, so quick add offers the live dictation (fork: voice-live). */
++export interface SpeechService { connected: boolean; host?: string; live?: boolean }
++
++/** One task of a live dictation as the interpreter reads it (fork: voice-live). */
++export interface VoiceTaskWire {
++  title: string
++  date?: string
++  time?: string
++  deadline?: string
++  recurrence?: string
++  project?: string
++  labels?: string[]
++  priority?: number
++  deleted?: boolean
++}
++
++/** One utterance of a live dictation with what the interpreter needs to place it. */
++export interface VoiceInterpretRequest {
++  text: string
++  language: string
++  /** The device's wall clock, "YYYY-MM-DDTHH:MM". */
++  now: string
++  timeZone?: string
++  tasks: VoiceTaskWire[]
++  previous: string[]
++  projects: string[]
++  labels: string[]
++}
++
++/**
++ * What an utterance does: null fields stay as they are, `clear` names removed ones; `ref` counts tasks from 1.
++ * `finish` is the person saying the dictation is over ("eso es todo"): the drafts are added.
++ */
++export interface VoiceAction {
++  type: 'create' | 'update' | 'delete' | 'finish'
++  ref: number | null
++  title: string | null
++  date: string | null
++  time: string | null
++  deadline: string | null
++  recurrence: string | null
++  project: string | null
++  labels: string[] | null
++  priority: number | null
++  clear: string[]
++}
+ 
+ /** The owner's view of the speech service: never the key. */
+ export interface SpeechSettings {
+diff --git a/web/src/lib/voice/dictation.ts b/web/src/lib/voice/dictation.ts
+--- a/web/src/lib/voice/dictation.ts
++++ b/web/src/lib/voice/dictation.ts
+@@ -29,6 +29,12 @@
+   /** Human name of a language tag for the fallback notice ("Italian"). */
+   languageName?(tag: string): string
+   update(view: DictationView): void
++  /**
++   * A whole phrase, in session mode: the caller turns it into a task and the
++   * microphone keeps listening (voice-ramble-parity). Without it the transcript
++   * stays in the field, as before.
++   */
++  onPhrase?(text: string): void
+ }
+ 
+ export type Recognizer = (opts: { lang?: string } & RecognitionCallbacks) => RecognitionSession
+@@ -74,11 +80,14 @@
+   dispose(): void
+ }
+ 
+-export function createDictation(host: DictationHost, recognize: Recognizer = startRecognition, allow: () => Promise<boolean> = allowMicrophone): Dictation {
++export function createDictation(host: DictationHost, recognize: Recognizer = startRecognition, allow: () => Promise<boolean> = allowMicrophone, options: { session?: boolean } = {}): Dictation {
++  const sessionMode = options.session === true
+   let view: DictationView = { status: 'idle', announcement: '', message: null }
+   let session: RecognitionSession | null = null
+   let disposed = false
+   let round = 0
++  /** In session mode, a phrase the user finished on purpose must not restart the microphone. */
++  let userStopped = false
+ 
+   const set = (patch: Partial<DictationView>) => {
+     view = { ...view, ...patch }
+@@ -87,6 +96,7 @@
+ 
+   function begin(langOverride?: string | null) {
+     const mine = ++round
++    userStopped = false
+     const original = host.getValue()
+     const sel = host.getSelection()
+     const prefix = original.slice(0, sel.start)
+@@ -124,6 +134,19 @@
+       },
+       onEnd: () => {
+         session = null
++        const phrase = final ? host.normalize(final) : ''
++        // Session mode (voice-ramble-parity): a finished phrase becomes a task and
++        // the microphone keeps listening, so a ramble makes several tasks in a row.
++        // Silence ends the engine too; there we simply listen again.
++        if (sessionMode && !userStopped && !disposed && !error) {
++          if (phrase) {
++            host.setValue('', 0)
++            host.onPhrase?.(phrase)
++          }
++          set({ status: 'listening', announcement: 'Listening' })
++          begin()
++          return
++        }
+         if (final) {
+           const { value, caret } = insertTranscript(prefix, host.normalize(final), suffix)
+           host.setValue(value, caret)
+@@ -154,6 +177,7 @@
+ 
+   function stop() {
+     round++
++    userStopped = true
+     if (session) session.stop()
+     else if (view.status === 'starting') set({ status: 'idle', announcement: 'Stopped' })
+   }
+diff --git a/web/src/lib/voice/engine.ts b/web/src/lib/voice/engine.ts
+--- a/web/src/lib/voice/engine.ts
++++ b/web/src/lib/voice/engine.ts
+@@ -6,3 +6,6 @@
+ export { startServerRecognition } from './serverRecognition'
+ export { normalizeSpoken } from './spoken'
+ export { createRamble, startLongRecognition, startServerPieces } from './ramble'
++// Live dictation (fork: voice-live).
++export { startLive } from './live'
++export { createVoiceSession } from './voiceSession'
+diff --git a/web/src/lib/voice/serverRecognition.ts b/web/src/lib/voice/serverRecognition.ts
+--- a/web/src/lib/voice/serverRecognition.ts
++++ b/web/src/lib/voice/serverRecognition.ts
+@@ -6,10 +6,86 @@
+ // comes back as the final result. Same interface as the browser recogniser, so
+ // the dictation state machine is unchanged.
+ import { api, ApiError, isNetworkError } from '../api'
++import { primedContext } from './audioPrime'
+ import type { RecognitionCallbacks, RecognitionSession, VoiceErrorKind } from './recognition'
+ 
+ /** Longest phrase, in milliseconds. */
+ export const MAX_PHRASE_MS = 60_000
++
++/** Silence after speech that closes the phrase (voice-ramble-parity). */
++export const SILENCE_MS = 900
++
++/**
++ * Closes a recording when the speaker stops (energy-based VAD), so the server's
++ * speech service can be used the way the browser's is: speak, pause, the phrase
++ * goes. Returns a stop function; without Web Audio it does nothing and the
++ * caller keeps the manual/60-second behaviour.
++ */
++export function watchSilence(
++  stream: MediaStream,
++  win: unknown,
++  onSilence: () => void,
++  { silenceMs = SILENCE_MS, threshold = 0.008, noSpeechMs = 7000 } = {},
++): () => void {
++  const w = win as { AudioContext?: new () => AudioContext; webkitAudioContext?: new () => AudioContext }
++  const Ctx = w.AudioContext ?? w.webkitAudioContext
++  const shared = primedContext()
++  const own = !shared
++  if (!shared && !Ctx) return () => {}
++  let ctx: AudioContext
++  try {
++    ctx = shared ?? new Ctx!()
++  } catch {
++    return () => {}
++  }
++  // iOS/Safari creates the context suspended: without this the analyser returns
++  // zeros and the phrase never closes.
++  if (ctx.state === 'suspended') void ctx.resume().catch(() => {})
++  const source = ctx.createMediaStreamSource(stream)
++  const analyser = ctx.createAnalyser()
++  analyser.fftSize = 1024
++  source.connect(analyser)
++  const samples = new Float32Array(analyser.fftSize)
++  const startedAt = Date.now()
++  let lastVoice = 0
++  let heard = false
++  // The background noise of the first 500 ms: the threshold adapts to the phone.
++  let ambient = 0
++  let ambientN = 0
++  const timer = setInterval(() => {
++    analyser.getFloatTimeDomainData(samples)
++    let sum = 0
++    for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i]
++    const rms = Math.sqrt(sum / samples.length)
++    const now = Date.now()
++    if (now - startedAt < 500 && !heard) {
++      ambient += rms
++      ambientN += 1
++      return
++    }
++    const level = Math.max(threshold, ambientN ? (ambient / ambientN) * 2 : 0)
++    if (rms > level) {
++      lastVoice = now
++      heard = true
++    } else if (heard && now - lastVoice > silenceMs) {
++      clearInterval(timer)
++      onSilence()
++    } else if (!heard && now - startedAt > noSpeechMs) {
++      // Nobody spoke: close anyway, so the microphone is not left on for 60 s.
++      clearInterval(timer)
++      onSilence()
++    }
++  }, 80)
++  return () => {
++    clearInterval(timer)
++    try {
++      source.disconnect()
++    } catch {
++      /* already gone */
++    }
++    if (own) ctx.close().catch(() => {})
++  }
++}
+ 
+ const TYPES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4']
+ 
+@@ -46,6 +122,7 @@
+   const w = win as { MediaRecorder?: RecorderCtor; navigator?: Navigator }
+   let recorder: RecorderLike | null = null
+   let stream: MediaStream | null = null
++  let stopWatch: (() => void) | null = null
+   let stopped = false
+   let ended = false
+   let timer: ReturnType<typeof setTimeout> | undefined
+@@ -53,6 +130,8 @@
+     if (ended) return
+     ended = true
+     clearTimeout(timer)
++    stopWatch?.()
++    stopWatch = null
+     stream?.getTracks().forEach((t) => t.stop())
+     opts.onEnd()
+   }
+@@ -81,6 +160,8 @@
+     const startedAt = Date.now()
+     rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data) }
+     rec.onstop = () => {
++      stopWatch?.()
++      stopWatch = null
+       stream?.getTracks().forEach((t) => t.stop())
+       const phrase = new Blob(chunks, { type: (rec.mimeType || type || 'audio/webm').split(';')[0] })
+       chunks.length = 0
+@@ -93,6 +174,11 @@
+     }
+     rec.start()
+     opts.onStart?.()
++    // Speak, pause, the phrase closes and is sent: the same feel as the browser's
++    // recogniser, so a voice session can make task after task.
++    stopWatch = watchSilence(s, w, () => {
++      if (rec.state === 'recording') rec.stop()
++    })
+     timer = setTimeout(() => { if (rec.state === 'recording') rec.stop() }, MAX_PHRASE_MS)
+   }, (err: { name?: string }) => {
+     opts.onError(err?.name === 'NotAllowedError' ? 'denied' : err?.name === 'NotFoundError' ? 'no-microphone' : 'unavailable', err?.name ?? 'error')
+diff --git a/web/src/lib/voice/settings.test.ts b/web/src/lib/voice/settings.test.ts
+--- a/web/src/lib/voice/settings.test.ts
++++ b/web/src/lib/voice/settings.test.ts
+@@ -20,7 +20,8 @@
+ 
+ describe('voice settings', () => {
+   it('are off by default and stored on this device only', () => {
+-    expect(loadVoiceSettings()).toEqual({ enabled: false, lang: null, recognizer: 'browser' })
++    // Fork: the server's speech service is the default recogniser (it falls back to the browser's without one).
++    expect(loadVoiceSettings()).toEqual({ enabled: false, lang: null, recognizer: 'server' })
+     saveVoiceSettings({ enabled: true, lang: 'it', recognizer: 'browser' })
+     expect(JSON.parse(store.get('opentodo.voice')!)).toEqual({ enabled: true, lang: 'it', recognizer: 'browser' })
+     expect(loadVoiceSettings()).toEqual({ enabled: true, lang: 'it', recognizer: 'browser' })
+@@ -30,7 +31,7 @@
+     store.set('opentodo.voice', JSON.stringify({ enabled: 'yes', lang: 'xx' }))
+     expect(loadVoiceSettings()).toEqual({ enabled: false, lang: null, recognizer: 'browser' })
+     store.set('opentodo.voice', '{not json')
+-    expect(loadVoiceSettings()).toEqual({ enabled: false, lang: null, recognizer: 'browser' })
++    expect(loadVoiceSettings()).toEqual({ enabled: false, lang: null, recognizer: 'server' })
+   })
+ 
+   it('survive blocked storage', () => {
+diff --git a/web/src/lib/voice/settings.ts b/web/src/lib/voice/settings.ts
+--- a/web/src/lib/voice/settings.ts
++++ b/web/src/lib/voice/settings.ts
+@@ -19,7 +19,10 @@
+ 
+ export type Recognizer = 'browser' | 'server'
+ 
+-export const DEFAULT_VOICE_SETTINGS: VoiceSettings = { enabled: false, lang: null, recognizer: 'browser' }
++// Fork (voice-live): the server's speech service is the default, so a server with
++// OpenAI connected dictates live out of the box; when the owner connected no
++// service, useDictation falls back to the browser's recogniser.
++export const DEFAULT_VOICE_SETTINGS: VoiceSettings = { enabled: false, lang: null, recognizer: 'server' }
+ 
+ const KEY = 'opentodo.voice'
+ const EVENT = 'opentodo:voice-settings'
+diff --git a/web/src/lib/voice/speechService.ts b/web/src/lib/voice/speechService.ts
+--- a/web/src/lib/voice/speechService.ts
++++ b/web/src/lib/voice/speechService.ts
+@@ -19,7 +19,7 @@
+ 
+ /** Records the server's answer (also used by tests and stories). */
+ export function setSpeechService(s: SpeechService): void {
+-  const next = s.connected ? { connected: true, host: s.host } : NONE
++  const next: SpeechService = s.connected ? { connected: true, host: s.host, ...(s.live ? { live: true } : {}) } : NONE
+   writeJSON(KEY, next) // storage refused: memory only
+   store.set(next)
+ }
+@@ -46,3 +46,9 @@
+   const w = win as { MediaRecorder?: unknown; navigator?: { mediaDevices?: { getUserMedia?: unknown } } }
+   return typeof w.MediaRecorder === 'function' && typeof w.navigator?.mediaDevices?.getUserMedia === 'function'
+ }
++
++/** Whether this browser can keep the microphone open to the live dictation (WebRTC). */
++export function canLive(win: unknown = globalThis): boolean {
++  const w = win as { RTCPeerConnection?: unknown; navigator?: { mediaDevices?: { getUserMedia?: unknown } } }
++  return typeof w.RTCPeerConnection === 'function' && typeof w.navigator?.mediaDevices?.getUserMedia === 'function'
++}
