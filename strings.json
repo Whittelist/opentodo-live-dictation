@@ -1,0 +1,172 @@
+{
+  "Changed": {
+    "files": [
+      "web/src/app/quickadd/LivePanel.tsx",
+      "web/src/lib/voice/voiceSession.ts"
+    ],
+    "es": "Cambiada",
+    "de": "Geändert",
+    "fr": "Modifiée",
+    "it": "Modificata",
+    "pt": "Alterada",
+    "nl": "Gewijzigd",
+    "zh": "已更改"
+  },
+  "Dictation stopped": {
+    "files": [
+      "web/src/app/quickadd/LivePanel.tsx",
+      "web/src/lib/voice/voiceSession.ts"
+    ],
+    "es": "Dictado detenido",
+    "de": "Diktat beendet",
+    "fr": "Dictée arrêtée",
+    "it": "Dettatura interrotta",
+    "pt": "Ditado parado",
+    "nl": "Dicteren gestopt",
+    "zh": "听写已停止"
+  },
+  "Hearing you…": {
+    "files": [
+      "web/src/app/quickadd/LivePanel.tsx"
+    ],
+    "es": "Te escucho…",
+    "de": "Ich höre dich…",
+    "fr": "Je vous écoute…",
+    "it": "Ti sento…",
+    "pt": "Estou ouvindo…",
+    "nl": "Ik hoor je…",
+    "zh": "正在听你说…"
+  },
+  "Listening…": {
+    "files": [
+      "web/src/app/quickadd/VoiceParts.tsx"
+    ],
+    "es": "Escuchando…",
+    "de": "Hört zu…",
+    "fr": "Écoute…",
+    "it": "In ascolto…",
+    "pt": "Ouvindo…",
+    "nl": "Luistert…",
+    "zh": "正在聆听…"
+  },
+  "Live dictation": {
+    "files": [
+      "web/src/app/quickadd/LivePanel.tsx"
+    ],
+    "es": "Dictado en vivo",
+    "de": "Live-Diktat",
+    "fr": "Dictée en direct",
+    "it": "Dettatura dal vivo",
+    "pt": "Ditado ao vivo",
+    "nl": "Live dicteren",
+    "zh": "实时听写"
+  },
+  "Neither the server nor the app keeps the audio or the text. The tasks are saved and synced like typed ones.": {
+    "files": [
+      "web/src/app/VoiceSettings.tsx"
+    ],
+    "es": "Ni el servidor ni la app guardan el audio ni el texto. Las tareas se guardan y sincronizan como las escritas.",
+    "de": "Weder der Server noch die App behalten Audio oder Text. Die Aufgaben werden wie getippte gespeichert und synchronisiert.",
+    "fr": "Ni le serveur ni l’app ne conservent l’audio ou le texte. Les tâches sont enregistrées et synchronisées comme celles que vous tapez.",
+    "it": "Né il server né l'app conservano l'audio o il testo. Le attività vengono salvate e sincronizzate come quelle scritte.",
+    "pt": "Nem o servidor nem o app guardam o áudio ou o texto. As tarefas são salvas e sincronizadas como as digitadas.",
+    "nl": "Noch de server, noch de app bewaart de audio of de tekst. De taken worden opgeslagen en gesynchroniseerd zoals getypte taken.",
+    "zh": "服务器和应用都不会保留音频或文字。任务会像输入的任务一样保存和同步。"
+  },
+  "Say your tasks one after another; to change one, just say so. Say “that’s all” to add them.": {
+    "files": [
+      "web/src/app/quickadd/LivePanel.tsx"
+    ],
+    "es": "Di tus tareas una tras otra; para cambiar una, dilo sin más. Di «eso es todo» para añadirlas.",
+    "de": "Sag deine Aufgaben nacheinander; um eine zu ändern, sag es einfach. Sag „das ist alles“, um sie hinzuzufügen.",
+    "fr": "Dites vos tâches l’une après l’autre ; pour en modifier une, dites-le simplement. Dites « c’est tout » pour les ajouter.",
+    "it": "Di' le tue attività una dopo l'altra; per cambiarne una, dillo e basta. Di' «è tutto» per aggiungerle.",
+    "pt": "Diga suas tarefas uma após a outra; para mudar uma, é só dizer. Diga “é tudo” para adicioná-las.",
+    "nl": "Zeg je taken na elkaar; wil je er een wijzigen, zeg het dan gewoon. Zeg ‘dat is alles’ om ze toe te voegen.",
+    "zh": "依次说出你的任务；要修改某个任务，直接说出来就行。说“就这些”即可添加。"
+  },
+  "Starting…": {
+    "files": [
+      "web/src/app/quickadd/VoiceParts.tsx"
+    ],
+    "es": "Iniciando…",
+    "de": "Wird gestartet…",
+    "fr": "Démarrage…",
+    "it": "Avvio…",
+    "pt": "Iniciando…",
+    "nl": "Starten…",
+    "zh": "正在启动…"
+  },
+  "Stopped after 10 minutes. Tap the microphone to go on.": {
+    "files": [
+      "web/src/lib/voice/voiceSession.ts"
+    ],
+    "es": "Se detuvo a los 10 minutos. Toca el micrófono para seguir.",
+    "de": "Nach 10 Minuten beendet. Tippe auf das Mikrofon, um weiterzumachen.",
+    "fr": "Arrêtée au bout de 10 minutes. Touchez le micro pour continuer.",
+    "it": "Interrotta dopo 10 minuti. Tocca il microfono per continuare.",
+    "pt": "Parou após 10 minutos. Toque no microfone para continuar.",
+    "nl": "Gestopt na 10 minuten. Tik op de microfoon om verder te gaan.",
+    "zh": "已在 10 分钟后停止。点按麦克风继续。"
+  },
+  "The assistant did not answer, so the phrase was added as said. Corrections need it back.": {
+    "files": [
+      "web/src/lib/voice/voiceSession.ts"
+    ],
+    "es": "El asistente no respondió, así que la frase se añadió tal cual. Para corregir hace falta que vuelva.",
+    "de": "Der Assistent hat nicht geantwortet, daher wurde der Satz so hinzugefügt, wie er gesagt wurde. Korrekturen brauchen ihn wieder.",
+    "fr": "L’assistant n’a pas répondu : la phrase a été ajoutée telle quelle. Les corrections attendront son retour.",
+    "it": "L'assistente non ha risposto, quindi la frase è stata aggiunta così com'era. Per le correzioni serve che torni.",
+    "pt": "O assistente não respondeu, então a frase foi adicionada como foi dita. As correções precisam que ele volte.",
+    "nl": "De assistent antwoordde niet, dus de zin is toegevoegd zoals gezegd. Voor correcties is hij weer nodig.",
+    "zh": "助手没有响应，因此这句话按原样添加。需要助手恢复后才能更正。"
+  },
+  "The tasks could not be added. Try again.": {
+    "files": [
+      "web/src/lib/voice/voiceSession.ts"
+    ],
+    "es": "No se pudieron añadir las tareas. Inténtalo de nuevo.",
+    "de": "Die Aufgaben konnten nicht hinzugefügt werden. Versuch es noch einmal.",
+    "fr": "Impossible d’ajouter les tâches. Réessayez.",
+    "it": "Non è stato possibile aggiungere le attività. Riprova.",
+    "pt": "Não foi possível adicionar as tarefas. Tente novamente.",
+    "nl": "De taken konden niet worden toegevoegd. Probeer het opnieuw.",
+    "zh": "无法添加这些任务，请重试。"
+  },
+  "The text of each phrase goes through your OpenTodo server to the same service, which turns it into tasks: new ones, or changes to the ones you just dictated.": {
+    "files": [
+      "web/src/app/VoiceSettings.tsx"
+    ],
+    "es": "El texto de cada frase pasa por tu servidor de OpenTodo al mismo servicio, que lo convierte en tareas: nuevas, o cambios en las que acabas de dictar.",
+    "de": "Der Text jedes Satzes geht über deinen OpenTodo-Server an denselben Dienst, der daraus Aufgaben macht: neue oder Änderungen an den gerade diktierten.",
+    "fr": "Le texte de chaque phrase passe par votre serveur OpenTodo vers le même service, qui en fait des tâches : nouvelles, ou modifications de celles que vous venez de dicter.",
+    "it": "Il testo di ogni frase passa dal tuo server OpenTodo allo stesso servizio, che lo trasforma in attività: nuove, o modifiche a quelle appena dettate.",
+    "pt": "O texto de cada frase passa pelo seu servidor OpenTodo até o mesmo serviço, que o transforma em tarefas: novas, ou mudanças nas que você acabou de ditar.",
+    "nl": "De tekst van elke zin gaat via je OpenTodo-server naar dezelfde dienst, die er taken van maakt: nieuwe, of wijzigingen in de taken die je net dicteerde.",
+    "zh": "每句话的文字会经由你的 OpenTodo 服务器发送到同一服务，由它转换为任务：新任务，或对你刚刚听写的任务的修改。"
+  },
+  "While the microphone is on, this browser sends your voice straight to {host}, which tells the phrases apart and writes them down.": {
+    "files": [
+      "web/src/app/VoiceSettings.tsx"
+    ],
+    "es": "Mientras el micrófono está encendido, este navegador envía tu voz directamente a {host}, que separa las frases y las transcribe.",
+    "de": "Solange das Mikrofon an ist, sendet dieser Browser deine Stimme direkt an {host}, das die Sätze trennt und aufschreibt.",
+    "fr": "Tant que le micro est actif, ce navigateur envoie votre voix directement à {host}, qui sépare les phrases et les transcrit.",
+    "it": "Mentre il microfono è attivo, questo browser invia la tua voce direttamente a {host}, che separa le frasi e le trascrive.",
+    "pt": "Enquanto o microfone está ligado, este navegador envia sua voz diretamente para {host}, que separa as frases e as transcreve.",
+    "nl": "Zolang de microfoon aan is, stuurt deze browser je stem rechtstreeks naar {host}, dat de zinnen scheidt en uitschrijft.",
+    "zh": "麦克风开启期间，此浏览器会将你的语音直接发送到 {host}，由它分句并转写。"
+  },
+  "Your account is end-to-end encrypted: your project and label names are not sent, and while a request runs its text is readable by this server and the speech service.": {
+    "files": [
+      "web/src/app/VoiceSettings.tsx"
+    ],
+    "es": "Tu cuenta tiene cifrado de extremo a extremo: no se envían los nombres de tus proyectos ni etiquetas, y mientras dura una petición su texto es legible para este servidor y el servicio de voz.",
+    "de": "Dein Konto ist Ende-zu-Ende-verschlüsselt: Die Namen deiner Projekte und Labels werden nicht gesendet, und während eine Anfrage läuft, können dieser Server und der Sprachdienst ihren Text lesen.",
+    "fr": "Votre compte est chiffré de bout en bout : les noms de vos projets et étiquettes ne sont pas envoyés, et pendant une requête son texte est lisible par ce serveur et le service vocal.",
+    "it": "Il tuo account è cifrato end-to-end: i nomi dei tuoi progetti ed etichette non vengono inviati, e mentre una richiesta è in corso il suo testo è leggibile da questo server e dal servizio vocale.",
+    "pt": "Sua conta tem criptografia de ponta a ponta: os nomes dos seus projetos e etiquetas não são enviados, e enquanto uma solicitação está em andamento o texto dela pode ser lido por este servidor e pelo serviço de voz.",
+    "nl": "Je account is end-to-end versleuteld: de namen van je projecten en labels worden niet verstuurd, en zolang een verzoek loopt, kunnen deze server en de spraakdienst de tekst lezen.",
+    "zh": "你的帐户已端到端加密：不会发送你的项目和标签名称；请求进行期间，此服务器和语音服务可以读取其文字。"
+  }
+}
