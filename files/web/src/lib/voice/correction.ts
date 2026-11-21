@@ -12,7 +12,7 @@ const NUMBER_WORDS: Record<string, number> = {
 
 /** Lower case and without accents, for comparing. */
 export function plain(text: string): string {
-  return text.normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase()
+  return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
 }
 
 /**
