@@ -62,9 +62,10 @@ git apply ../opentodo-live-dictation/modified-files.patch
 ```
 
 Then:
-1. Raise `initialGzipKB` in `web/bundle-budget.json` from 712 to 714. The first load measures 713.2 KB; the panel and the engine are lazy.
-2. Build, and connect the speech service to `https://api.openai.com` with a key. Use Settings → Server → Speech to text, or `OPENTODO_STT_URL`, `OPENTODO_STT_MODEL` and `OPENTODO_STT_KEY_FILE`.
-3. Turn on voice capture in Settings → Capture.
+1. Add the 14 strings of `strings.json` to `web/src/locales/{es,de,fr,it,pt,nl,zh}.json`, and regenerate `web/src/locales/messages.json` with the extractor. The patch leaves the catalogs out; `strings.json` lists each string, the files that use it and a draft translation.
+2. Raise `initialGzipKB` in `web/bundle-budget.json` from 712 to 714. The first load measures 713.2 KB; the panel and the engine are lazy.
+3. Build, and connect the speech service to `https://api.openai.com` with a key. Use Settings → Server → Speech to text, or `OPENTODO_STT_URL`, `OPENTODO_STT_MODEL` and `OPENTODO_STT_KEY_FILE`.
+4. Turn on voice capture in Settings → Capture.
 
 ## What changes
 
@@ -79,7 +80,7 @@ Then:
   - `app/quickadd/LivePanel.tsx`: the panel, lazy.
   - The wiring in `useDictation.ts`, `QuickAdd.tsx` and `QuickAddSheet.tsx`.
 - **Earlier work in the same fork.** Phrase-by-phrase dictation for the server recogniser, with an energy-based end of phrase (`serverRecognition.ts`, `audioPrime.ts`), and spoken corrections read locally (`correction.ts`). The latter is now the fallback when the interpreter does not answer.
-- **Strings.** Fourteen new strings in `messages.json` and the seven catalogs.
+- **Strings.** Fourteen new strings, in `strings.json`.
 
 ## Tested
 
